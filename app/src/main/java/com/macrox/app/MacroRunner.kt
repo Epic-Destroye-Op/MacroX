@@ -9,7 +9,7 @@ class MacroRunner(
     private val isPaused: () -> Boolean,
     private val isStopped: () -> Boolean
 ) {
-    suspend fun execute(macro: Macro, speed: Float): Result {
+    suspend fun execute(macro: Macro, speed: Float): Result<Unit> {
         val service = MacroAccessibilityService.instance
             ?: return Result.failure(IllegalStateException("Accessibility service is not enabled."))
 

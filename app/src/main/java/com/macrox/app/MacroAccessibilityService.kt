@@ -6,7 +6,8 @@ import android.graphics.Path
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.content.Intent
-import androidx.core.content.ContextCompat\nimport kotlinx.coroutines.suspendCancellableCoroutine
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 class MacroAccessibilityService : AccessibilityService() {
@@ -33,7 +34,7 @@ class MacroAccessibilityService : AccessibilityService() {
             else -> false
         }
         if (matched) {
-            ContextCompat.startForegroundService(this, Intent(this, MacroEngineService).setAction(MacroEngineService.ACTION_TRIGGER))
+            ContextCompat.startForegroundService(this, Intent(this, MacroEngineService::class.java).setAction(MacroEngineService.ACTION_TRIGGER))
             return true
         }
         return false
