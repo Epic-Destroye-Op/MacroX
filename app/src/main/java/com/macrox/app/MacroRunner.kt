@@ -43,6 +43,10 @@ class MacroRunner(
         }
     }
 
+    private val keyboardMode: Boolean
+        get() = context.getSharedPreferences(MacroPrefs.PREFS, Context.MODE_PRIVATE)
+            .getString(MacroPrefs.KEY_OUTPUT, MacroPrefs.OUTPUT_SHIZUKU) == MacroPrefs.OUTPUT_KEYBOARD
+
     private suspend fun runStep(service: MacroAccessibilityService, step: MacroStep, speed: Float) {
         when (step.type) {
             ActionType.DELAY -> delay(scaled(step.durationMs, speed))
@@ -58,9 +62,12 @@ class MacroRunner(
             ActionType.KEY_PRESS -> {
                 val key = MacroKeys.find(step.key)
                     ?: throw IllegalStateException("Key step has no valid key selected.")
-                // Android has no public API for one app to send key events to another.
-                // KeyInjector uses Shizuku (ADB-level shell) or root to run `input keyevent`.
-                if (!KeyInjector.press(key.keyCode)) {
+                if (keyboardMode) {
+                    // Macro X keyboard: only reaches the focused text field of the app in front.
+                    if (!MacroKeyboardService.send(key.keyCode)) {
+                        throw IllegalStateException("Macro X keyboard is not active, or no text field is focused.")
+                    }
+                } else if (!KeyInjector.press(key.keyCode)) {
                     throw IllegalStateException("Key ${key.label} needs Shizuku (running and granted) or root.")
                 }
             }

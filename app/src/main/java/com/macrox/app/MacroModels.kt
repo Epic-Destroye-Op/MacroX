@@ -113,4 +113,7 @@ object MacroPrefs {
     const val MAX_REPEAT = "max_repeat"
     const val HISTORY = "history_json"
     const val MACROS = "macros_json"
+    const val KEY_OUTPUT = "key_output"
+    const val OUTPUT_SHIZUKU = "SHIZUKU_ROOT"
+    const val OUTPUT_KEYBOARD = "KEYBOARD"
 }

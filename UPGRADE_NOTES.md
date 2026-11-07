@@ -20,3 +20,12 @@ The original uploaded ZIP was not modified or overwritten.
 - Tap and Swipe actions removed. Saved Tap steps load as Left Click (1 ms hold). Saved Swipe steps are dropped on load. Unknown action names are skipped, not fatal.
 - Not implemented: key hold/release, right click, input recording, nested repeat blocks. See README.
 
+## v2.3
+- Key output setting: Shizuku or root (any app), or Macro X keyboard (no root, focused text field only). Select it in Settings → Key output.
+- Macro X keyboard: enable it in input settings, then start the macro with a volume key while a text field is focused. Starting from the Home button brings Macro X to the front, which removes that focus.
+- Macros tab: full-screen editor, cleaner step cards, and a simpler action picker (Key / Mouse / Wait, with Click / Hold start / Release for mouse).
+- Settings scrolls. Key categories are a dropdown.
+- Home: red flames around the power button while a macro runs. The top bar shows RUNNING with the macro name. Pressing power without Accessibility or a macro shows a message.
+- Tab switching animates. The title has a red X.
+- Not verified on a device. Built without an Android SDK in the sandbox.
+

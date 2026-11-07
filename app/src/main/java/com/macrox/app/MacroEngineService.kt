@@ -51,6 +51,7 @@ class MacroEngineService : Service() {
         if (execution?.isActive == true) return
         stopped = false
         isRunning = true
+        currentMacroName = macro.name
         updateNotification("Running ${macro.name}")
         execution = scope.launch {
             val started = System.currentTimeMillis()
@@ -61,7 +62,7 @@ class MacroEngineService : Service() {
             val status = when {
                 result.isSuccess -> "COMPLETED"
                 stopped -> "STOPPED"
-                // Carry the real reason (e.g. missing root for key presses) into history.
+                // Carry the real reason (e.g. missing Shizuku or root) into history.
                 else -> "FAILED: ${(result.exceptionOrNull()?.message ?: "").take(120)}"
             }
             MacroStore.addHistory(
@@ -69,6 +70,7 @@ class MacroEngineService : Service() {
                 HistoryEntry(System.currentTimeMillis(), macro.name, started, System.currentTimeMillis() - started, status)
             )
             isRunning = false
+            currentMacroName = null
             execution = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -80,6 +82,7 @@ class MacroEngineService : Service() {
         execution?.cancel()
         execution = null
         isRunning = false
+        currentMacroName = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -108,6 +111,7 @@ class MacroEngineService : Service() {
     override fun onDestroy() {
         scope.cancel()
         isRunning = false
+        currentMacroName = null
         super.onDestroy()
     }
 
@@ -115,6 +119,7 @@ class MacroEngineService : Service() {
 
     companion object {
         @Volatile var isRunning: Boolean = false
+        @Volatile var currentMacroName: String? = null
 
         const val ACTION_STOP = "com.macrox.app.STOP"
         const val ACTION_TRIGGER = "com.macrox.app.TRIGGER"
