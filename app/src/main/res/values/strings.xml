@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Macro X</string>
+    <string name="accessibility_description">Macro X uses accessibility gestures for user-configured screen taps and swipes and listens for the selected volume trigger.</string>
+</resources>
