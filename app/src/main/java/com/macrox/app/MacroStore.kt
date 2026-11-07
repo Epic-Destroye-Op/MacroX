@@ -19,15 +19,23 @@ object MacroStore {
                     val parsed = buildList {
                         for (j in 0 until steps.length()) {
                             val s = steps.getJSONObject(j)
+                            // Legacy TAP steps become a 1 ms left click at the same point, which is
+                            // what the old tap gesture did. SWIPE has no equivalent and is dropped.
+                            // Unknown types are skipped rather than failing the whole macro list.
+                            val raw = s.optString("type")
+                            val legacyTap = raw == "TAP"
+                            val type = if (legacyTap) ActionType.MOUSE_LEFT_CLICK
+                                else ActionType.fromName(raw) ?: continue
                             add(
                                 MacroStep(
-                                    type = ActionType.valueOf(s.getString("type")),
+                                    type = type,
                                     x1 = s.optInt("x1"),
                                     y1 = s.optInt("y1"),
                                     x2 = s.optInt("x2"),
                                     y2 = s.optInt("y2"),
-                                    durationMs = s.optLong("durationMs", 250L),
-                                    delayAfterMs = s.optLong("delayAfterMs", 0L)
+                                    durationMs = if (legacyTap) 1L else s.optLong("durationMs", 250L),
+                                    delayAfterMs = s.optLong("delayAfterMs", 0L),
+                                    key = s.optString("key", "").ifEmpty { null }
                                 )
                             )
                         }
@@ -61,6 +69,8 @@ object MacroStore {
                         .put("x2", s.x2).put("y2", s.y2)
                         .put("durationMs", s.durationMs)
                         .put("delayAfterMs", s.delayAfterMs)
+                        // put(name, null) removes the key, so non-key steps stay compact.
+                        .put("key", s.key)
                 )
             }
             o.put("steps", steps)

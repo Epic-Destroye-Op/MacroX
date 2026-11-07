@@ -61,7 +61,8 @@ class MacroEngineService : Service() {
             val status = when {
                 result.isSuccess -> "COMPLETED"
                 stopped -> "STOPPED"
-                else -> "FAILED"
+                // Carry the real reason (e.g. missing root for key presses) into history.
+                else -> "FAILED: ${(result.exceptionOrNull()?.message ?: "").take(120)}"
             }
             MacroStore.addHistory(
                 applicationContext,

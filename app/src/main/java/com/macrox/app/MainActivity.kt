@@ -18,6 +18,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -72,6 +78,7 @@ private fun MacroXApp(activity: MainActivity) {
     var running by remember { mutableStateOf(false) }
     var accessibility by remember { mutableStateOf(false) }
     var battery by remember { mutableStateOf(false) }
+    var shizuku by remember { mutableStateOf(ShizukuState.NOT_RUNNING) }
 
     fun refresh() {
         macros = MacroStore.getMacros(activity)
@@ -80,6 +87,7 @@ private fun MacroXApp(activity: MainActivity) {
         volumeOn = prefs.getBoolean(MacroPrefs.ENABLED, false)
         running = MacroEngineService.isRunning
         accessibility = isAccessibilityEnabled(activity)
+        shizuku = KeyInjector.shizukuState()
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
         battery = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             pm.isIgnoringBatteryOptimizations(activity.packageName)
@@ -210,6 +218,8 @@ private fun MacroXApp(activity: MainActivity) {
                         volumeOn = volumeOn,
                         onAccessibility = ::openAccessibility,
                         onBattery = ::openBattery,
+                        shizuku = shizuku,
+                        onShizuku = { KeyInjector.requestShizukuPermission() },
                         onVolumeChange = { on ->
                             volumeOn = on
                             prefs.edit().putBoolean(MacroPrefs.ENABLED, on).apply()
@@ -397,7 +407,7 @@ private fun MacroScreen(activity: Context, macros: List<Macro>, maxRepeat: Int, 
         }
         Spacer(Modifier.height(14.dp))
         if (macros.isEmpty()) {
-            EmptyCard("No saved macros", "Tap New to build your first sequence of taps, swipes and waits.")
+            EmptyCard("No saved macros", "Tap New to build your first sequence of clicks, key presses and waits.")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(macros, key = { _, m -> m.id }) { _, macro ->
@@ -538,16 +548,36 @@ private fun MacroEditorDialog(
     }
 }
 
-private fun stepLabel(step: MacroStep) = when (step.type) {
-    ActionType.TAP -> "Tap"
-    ActionType.SWIPE -> "Swipe"
+private val editorActionTypes = listOf(
+    ActionType.DELAY,
+    ActionType.KEY_PRESS,
+    ActionType.MOUSE_LEFT_CLICK,
+    ActionType.MOUSE_LEFT_DOWN,
+    ActionType.MOUSE_LEFT_UP
+)
+
+private fun actionTypeLabel(type: ActionType) = when (type) {
     ActionType.DELAY -> "Wait"
+    ActionType.KEY_PRESS -> "Key"
+    ActionType.MOUSE_LEFT_CLICK -> "Left Click"
+    ActionType.MOUSE_LEFT_DOWN -> "Mouse Down"
+    ActionType.MOUSE_LEFT_UP -> "Mouse Up"
+}
+
+private fun stepLabel(step: MacroStep) = when (step.type) {
+    ActionType.DELAY -> "Wait"
+    ActionType.KEY_PRESS -> "Key Press"
+    ActionType.MOUSE_LEFT_CLICK -> "Left Click"
+    ActionType.MOUSE_LEFT_DOWN -> "Mouse Down (left)"
+    ActionType.MOUSE_LEFT_UP -> "Mouse Up (left)"
 }
 
 private fun stepDetail(step: MacroStep) = when (step.type) {
-    ActionType.TAP -> "x ${step.x1}, y ${step.y1}  •  then wait ${step.delayAfterMs} ms"
-    ActionType.SWIPE -> "(${step.x1}, ${step.y1}) to (${step.x2}, ${step.y2})  •  ${step.durationMs} ms  •  then wait ${step.delayAfterMs} ms"
     ActionType.DELAY -> "${step.durationMs} ms"
+    ActionType.KEY_PRESS -> "${MacroKeys.find(step.key)?.label ?: "No key selected"}  •  then wait ${step.delayAfterMs} ms"
+    ActionType.MOUSE_LEFT_CLICK -> "x ${step.x1}, y ${step.y1}  •  hold ${step.durationMs} ms  •  then wait ${step.delayAfterMs} ms"
+    ActionType.MOUSE_LEFT_DOWN -> "x ${step.x1}, y ${step.y1}  •  held until Mouse Up  •  then wait ${step.delayAfterMs} ms"
+    ActionType.MOUSE_LEFT_UP -> "releases the left button  •  then wait ${step.delayAfterMs} ms"
 }
 
 @Composable
@@ -556,26 +586,28 @@ private fun StepEditorDialog(
     onCancel: () -> Unit,
     onSave: (MacroStep) -> Unit
 ) {
-    var type by remember { mutableStateOf(initial?.type ?: ActionType.TAP) }
+    var type by remember { mutableStateOf(initial?.type ?: ActionType.MOUSE_LEFT_CLICK) }
     var x1 by remember { mutableStateOf(initial?.x1?.toString() ?: "") }
     var y1 by remember { mutableStateOf(initial?.y1?.toString() ?: "") }
-    var x2 by remember { mutableStateOf(initial?.x2?.toString() ?: "") }
-    var y2 by remember { mutableStateOf(initial?.y2?.toString() ?: "") }
-    var duration by remember { mutableStateOf(initial?.durationMs?.toString() ?: "250") }
+    var duration by remember { mutableStateOf(initial?.durationMs?.toString() ?: "50") }
     var after by remember { mutableStateOf(initial?.delayAfterMs?.toString() ?: "0") }
+    var selectedKey by remember { mutableStateOf(initial?.key) }
     var error by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text(if (initial == null) "Add Step" else "Edit Step") },
         text = {
-            Column {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ActionType.entries.forEach { option ->
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    editorActionTypes.forEach { option ->
                         FilterChip(
                             selected = type == option,
-                            onClick = { type = option },
-                            label = { Text(stepLabel(MacroStep(option))) },
+                            onClick = { type = option; error = null },
+                            label = { Text(actionTypeLabel(option)) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = RedDark,
                                 selectedLabelColor = Color.White
@@ -585,18 +617,29 @@ private fun StepEditorDialog(
                 }
                 Spacer(Modifier.height(10.dp))
                 when (type) {
-                    ActionType.TAP -> {
+                    ActionType.DELAY -> CoordinateField("Wait duration (ms)", duration) { duration = it }
+                    ActionType.KEY_PRESS -> {
+                        Text("KEYBOARD", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                        Spacer(Modifier.height(6.dp))
+                        KeyPicker(selectedKey) { selectedKey = it; error = null }
+                    }
+                    ActionType.MOUSE_LEFT_CLICK -> {
+                        Text("MOUSE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                        CoordinateField("X", x1) { x1 = it }
+                        CoordinateField("Y", y1) { y1 = it }
+                        CoordinateField("Hold duration (ms)", duration) { duration = it }
+                    }
+                    ActionType.MOUSE_LEFT_DOWN -> {
+                        Text("MOUSE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
                         CoordinateField("X", x1) { x1 = it }
                         CoordinateField("Y", y1) { y1 = it }
                     }
-                    ActionType.SWIPE -> {
-                        CoordinateField("Start X", x1) { x1 = it }
-                        CoordinateField("Start Y", y1) { y1 = it }
-                        CoordinateField("End X", x2) { x2 = it }
-                        CoordinateField("End Y", y2) { y2 = it }
-                        CoordinateField("Swipe duration (ms)", duration) { duration = it }
+                    ActionType.MOUSE_LEFT_UP -> {
+                        Text(
+                            "Releases the left button pressed by the most recent Mouse Down step.",
+                            color = Muted, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp)
+                        )
                     }
-                    ActionType.DELAY -> CoordinateField("Wait duration (ms)", duration) { duration = it }
                 }
                 if (type != ActionType.DELAY) CoordinateField("Wait after (ms)", after) { after = it }
                 error?.let { Text(it, color = Red, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)) }
@@ -613,24 +656,34 @@ private fun StepEditorDialog(
                     return n
                 }
                 val a = when (type) {
-                    ActionType.TAP -> {
-                        val ax = intValue(x1, "X"); val ay = intValue(y1, "Y")
-                        if (ax == null || ay == null) return@Button
-                        MacroStep(type, ax, ay, delayAfterMs = intValue(after, "Delay")?.toLong() ?: return@Button)
-                    }
-                    ActionType.SWIPE -> {
-                        val ax = intValue(x1, "Start X"); val ay = intValue(y1, "Start Y")
-                        val bx = intValue(x2, "End X"); val by = intValue(y2, "End Y")
-                        val d = intValue(duration, "Duration")
-                        val wait = intValue(after, "Delay")
-                        if (ax == null || ay == null || bx == null || by == null || d == null || wait == null) return@Button
-                        if (d == 0) { error = "Swipe duration must be greater than 0."; return@Button }
-                        MacroStep(type, ax, ay, bx, by, d.toLong(), wait.toLong())
-                    }
                     ActionType.DELAY -> {
                         val d = intValue(duration, "Wait")
                         if (d == null || d == 0) { error = "Wait must be greater than 0."; return@Button }
                         MacroStep(type, durationMs = d.toLong())
+                    }
+                    ActionType.KEY_PRESS -> {
+                        val key = selectedKey
+                        if (key == null || MacroKeys.find(key) == null) { error = "Choose a key."; return@Button }
+                        val wait = intValue(after, "Delay") ?: return@Button
+                        MacroStep(type, delayAfterMs = wait.toLong(), key = key)
+                    }
+                    ActionType.MOUSE_LEFT_CLICK -> {
+                        val ax = intValue(x1, "X"); val ay = intValue(y1, "Y")
+                        val hold = intValue(duration, "Hold duration")
+                        val wait = intValue(after, "Delay")
+                        if (ax == null || ay == null || hold == null || wait == null) return@Button
+                        if (hold == 0) { error = "Hold duration must be greater than 0."; return@Button }
+                        MacroStep(type, ax, ay, durationMs = hold.toLong(), delayAfterMs = wait.toLong())
+                    }
+                    ActionType.MOUSE_LEFT_DOWN -> {
+                        val ax = intValue(x1, "X"); val ay = intValue(y1, "Y")
+                        val wait = intValue(after, "Delay")
+                        if (ax == null || ay == null || wait == null) return@Button
+                        MacroStep(type, ax, ay, delayAfterMs = wait.toLong())
+                    }
+                    ActionType.MOUSE_LEFT_UP -> {
+                        val wait = intValue(after, "Delay") ?: return@Button
+                        MacroStep(type, delayAfterMs = wait.toLong())
                     }
                 }
                 onSave(a)
@@ -638,6 +691,61 @@ private fun StepEditorDialog(
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("CANCEL", color = Muted) } },
         containerColor = Panel
+    )
+}
+
+@Composable
+private fun KeyPicker(selected: String?, onSelect: (String) -> Unit) {
+    var category by remember { mutableStateOf(MacroKeys.find(selected)?.category ?: KeyCategory.LETTERS) }
+    val keys = MacroKeys.all.filter { it.category == category }
+
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        KeyCategory.entries.forEach { option ->
+            FilterChip(
+                selected = category == option,
+                onClick = { category = option },
+                label = { Text(option.label, fontSize = 11.sp) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = RedDark,
+                    selectedLabelColor = Color.White
+                )
+            )
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(4),
+        modifier = Modifier.fillMaxWidth().height(180.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(keys, key = { it.id }) { key ->
+            val isSelected = selected == key.id
+            Surface(
+                modifier = Modifier.fillMaxWidth().height(40.dp).clickable { onSelect(key.id) },
+                shape = RoundedCornerShape(8.dp),
+                color = if (isSelected) RedDark else Panel2,
+                border = if (isSelected) BorderStroke(1.dp, Red) else null
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        key.label,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+    Text(
+        "Keys need Shizuku (running and granted) or root.",
+        color = Muted,
+        fontSize = 10.sp,
+        modifier = Modifier.padding(top = 6.dp)
     )
 }
 
@@ -705,6 +813,8 @@ private fun SettingsScreen(
     onAccessibility: () -> Unit,
     onBattery: () -> Unit,
     onVolumeChange: (Boolean) -> Unit,
+    shizuku: ShizukuState,
+    onShizuku: () -> Unit,
     onChanged: () -> Unit
 ) {
     val prefs = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
@@ -722,7 +832,17 @@ private fun SettingsScreen(
         }
 
         SectionCard("PERMISSIONS") {
-            PermissionRow("Accessibility service", "Needed to perform taps and swipes", accessibility, onAccessibility)
+            PermissionRow("Accessibility service", "Needed to perform clicks and key presses", accessibility, onAccessibility)
+            PermissionRow(
+                "Shizuku",
+                when (shizuku) {
+                    ShizukuState.READY -> "Running and granted. Keyboard keys can be sent."
+                    ShizukuState.NOT_GRANTED -> "Running. Tap OPEN to grant Macro X access."
+                    ShizukuState.NOT_RUNNING -> "Optional. Install and start Shizuku to send keyboard keys without root."
+                },
+                shizuku == ShizukuState.READY,
+                if (shizuku == ShizukuState.NOT_GRANTED) onShizuku else null
+            )
             PermissionRow(
                 "Unrestricted battery",
                 "Keeps Macro X from being stopped in the background",

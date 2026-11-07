@@ -11,12 +11,18 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 class MacroAccessibilityService : AccessibilityService() {
+    // A left button held by MOUSE_LEFT_DOWN, kept as a continuing stroke until MOUSE_LEFT_UP.
+    private var heldStroke: GestureDescription.StrokeDescription? = null
+    private var heldX = 0f
+    private var heldY = 0f
+
     override fun onServiceConnected() {
         instance = this
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        heldStroke = null
         super.onDestroy()
     }
 
@@ -40,18 +46,49 @@ class MacroAccessibilityService : AccessibilityService() {
         return false
     }
 
-    suspend fun tap(x: Int, y: Int): Boolean =
-        dispatch(Path().apply { moveTo(x.toFloat(), y.toFloat()) }, 1L)
+    /** True while a MOUSE_LEFT_DOWN is waiting for its MOUSE_LEFT_UP. */
+    val isHoldingMouse: Boolean get() = heldStroke != null
 
-    suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): Boolean =
-        dispatch(Path().apply {
-            moveTo(x1.toFloat(), y1.toFloat())
-            lineTo(x2.toFloat(), y2.toFloat())
-        }, durationMs.coerceIn(1L, 60_000L))
+    /** Left click at x,y held for durationMs. */
+    suspend fun click(x: Int, y: Int, durationMs: Long): Boolean =
+        dispatch(Path().apply { moveTo(x.toFloat(), y.toFloat()) }, durationMs.coerceIn(1L, 60_000L))
+
+    /** Presses the left button at x,y and keeps it down until [mouseUp]. Touch-level only. */
+    suspend fun mouseDown(x: Int, y: Int): Boolean {
+        if (heldStroke != null) return false
+        val stroke = GestureDescription.StrokeDescription(
+            Path().apply { moveTo(x.toFloat(), y.toFloat()) },
+            0L,
+            1L,
+            true // willContinue: the touch stays down until mouseUp continues it
+        )
+        val ok = dispatchStroke(stroke)
+        if (ok) {
+            heldStroke = stroke
+            heldX = x.toFloat()
+            heldY = y.toFloat()
+        }
+        return ok
+    }
+
+    /** Lifts the finger started by [mouseDown]. */
+    suspend fun mouseUp(): Boolean {
+        val previous = heldStroke ?: return false
+        heldStroke = null
+        val release = previous.continueStroke(
+            Path().apply { moveTo(heldX, heldY) },
+            0L,
+            1L,
+            false
+        )
+        return dispatchStroke(release)
+    }
 
     private suspend fun dispatch(path: Path, durationMs: Long): Boolean =
+        dispatchStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+
+    private suspend fun dispatchStroke(stroke: GestureDescription.StrokeDescription): Boolean =
         suspendCancellableCoroutine { cont ->
-            val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
             val accepted = dispatchGesture(
                 gesture,
