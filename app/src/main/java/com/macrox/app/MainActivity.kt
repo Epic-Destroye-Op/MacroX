@@ -11,11 +11,14 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -23,9 +26,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -35,10 +39,10 @@ import java.util.Date
 
 private val Bg = Color(0xFF050505)
 private val Panel = Color(0xFF111111)
-private val Panel2 = Color(0xFF171717)
+private val Panel2 = Color(0xFF181818)
 private val Red = Color(0xFFE11D2E)
-private val RedDark = Color(0xFF5E1119)
-private val Muted = Color(0xFF929292)
+private val RedDark = Color(0xFF4A0F16)
+private val Muted = Color(0xFF8A8A8A)
 private val Green = Color(0xFF45D483)
 
 class MainActivity : ComponentActivity() {
@@ -55,37 +59,27 @@ class MainActivity : ComponentActivity() {
         }
         setContent { MacroXApp(this) }
     }
-
-    override fun onResume() {
-        super.onResume()
-    }
 }
 
 @Composable
 private fun MacroXApp(activity: MainActivity) {
+    val prefs = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
     var tab by remember { mutableIntStateOf(0) }
     var macros by remember { mutableStateOf(MacroStore.getMacros(activity)) }
     var history by remember { mutableStateOf(MacroStore.getHistory(activity)) }
-    var selectedId by remember {
-        mutableLongStateOf(
-            activity.getSharedPreferences(MacroPrefs.PREFS, 0)
-                .getLong(MacroPrefs.SELECTED_MACRO, -1L)
-        )
-    }
-    var enabled by remember { mutableStateOf(false) }
+    var selectedId by remember { mutableLongStateOf(prefs.getLong(MacroPrefs.SELECTED_MACRO, -1L)) }
+    var volumeOn by remember { mutableStateOf(prefs.getBoolean(MacroPrefs.ENABLED, false)) }
+    var running by remember { mutableStateOf(false) }
     var accessibility by remember { mutableStateOf(false) }
-    var overlay by remember { mutableStateOf(false) }
     var battery by remember { mutableStateOf(false) }
 
     fun refresh() {
         macros = MacroStore.getMacros(activity)
         history = MacroStore.getHistory(activity)
-        selectedId = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
-            .getLong(MacroPrefs.SELECTED_MACRO, -1L)
-        enabled = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
-            .getBoolean(MacroPrefs.ENABLED, false)
+        selectedId = prefs.getLong(MacroPrefs.SELECTED_MACRO, -1L)
+        volumeOn = prefs.getBoolean(MacroPrefs.ENABLED, false)
+        running = MacroEngineService.isRunning
         accessibility = isAccessibilityEnabled(activity)
-        overlay = Settings.canDrawOverlays(activity)
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
         battery = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             pm.isIgnoringBatteryOptimizations(activity.packageName)
@@ -95,18 +89,32 @@ private fun MacroXApp(activity: MainActivity) {
     LaunchedEffect(Unit) {
         while (true) {
             refresh()
-            delay(800)
+            delay(500)
         }
+    }
+
+    val selected = macros.firstOrNull { it.id == selectedId } ?: macros.firstOrNull()
+    val ready = accessibility && selected != null
+
+    fun togglePower() {
+        if (running) {
+            activity.startService(
+                Intent(activity, MacroEngineService::class.java).setAction(MacroEngineService.ACTION_EMERGENCY_STOP)
+            )
+        } else {
+            val target = selected ?: return
+            if (!ready) return
+            prefs.edit().putLong(MacroPrefs.SELECTED_MACRO, target.id).apply()
+            ContextCompat.startForegroundService(
+                activity,
+                Intent(activity, MacroEngineService::class.java).setAction(MacroEngineService.ACTION_RUN_SELECTED)
+            )
+        }
+        refresh()
     }
 
     fun openAccessibility() {
         activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-    }
-
-    fun openOverlay() {
-        activity.startActivity(
-            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${activity.packageName}"))
-        )
     }
 
     fun openBattery() {
@@ -118,37 +126,6 @@ private fun MacroXApp(activity: MainActivity) {
                 )
             )
         }
-    }
-
-    fun canArm(): Boolean = accessibility && overlay && macros.isNotEmpty()
-
-    fun arm() {
-        if (!canArm()) return
-        activity.getSharedPreferences(MacroPrefs.PREFS, 0).edit()
-            .putBoolean(MacroPrefs.ENABLED, true).apply()
-        ContextCompat.startForegroundService(activity, Intent(activity, MacroEngineService::class.java))
-        enabled = true
-    }
-
-    fun disarm() {
-        activity.getSharedPreferences(MacroPrefs.PREFS, 0).edit()
-            .putBoolean(MacroPrefs.ENABLED, false).apply()
-        activity.startService(
-            Intent(activity, MacroEngineService::class.java).setAction(MacroEngineService.ACTION_STOP)
-        )
-        enabled = false
-    }
-
-    fun runSelected() {
-        if (!canArm()) return
-        val id = selectedId
-        if (id < 0L) return
-        activity.getSharedPreferences(MacroPrefs.PREFS, 0).edit()
-            .putBoolean(MacroPrefs.ENABLED, true).apply()
-        ContextCompat.startForegroundService(activity, Intent(activity, MacroEngineService::class.java))
-        activity.startService(
-            Intent(activity, MacroEngineService::class.java).setAction(MacroEngineService.ACTION_RUN_SELECTED)
-        )
     }
 
     MaterialTheme(
@@ -163,7 +140,7 @@ private fun MacroXApp(activity: MainActivity) {
             onSecondary = Color.White,
             onBackground = Color.White,
             onSurface = Color.White,
-            outline = Color(0xFF343434)
+            outline = Color(0xFF2E2E2E)
         )
     ) {
         Scaffold(
@@ -194,33 +171,32 @@ private fun MacroXApp(activity: MainActivity) {
                 Modifier.fillMaxSize().padding(padding).padding(horizontal = 18.dp)
             ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 16.dp),
+                    Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Macro X", fontSize = 27.sp, fontWeight = FontWeight.Black, color = Color.White)
                     Spacer(Modifier.weight(1f))
-                    StatusPill(enabled)
+                    StatusPill(running)
                 }
 
                 when (tab) {
                     0 -> HomeScreen(
-                        macros = macros,
-                        selectedId = selectedId,
-                        enabled = enabled,
-                        canArm = canArm(),
-                        onSelect = {
-                            selectedId = it
-                            activity.getSharedPreferences(MacroPrefs.PREFS, 0).edit()
-                                .putLong(MacroPrefs.SELECTED_MACRO, it).apply()
+                        selected = selected,
+                        running = running,
+                        ready = ready,
+                        accessibility = accessibility,
+                        onPower = ::togglePower,
+                        onOpenAccessibility = ::openAccessibility,
+                        onPick = { id ->
+                            selectedId = id
+                            prefs.edit().putLong(MacroPrefs.SELECTED_MACRO, id).apply()
                         },
-                        onRun = ::runSelected,
-                        onArm = { if (enabled) disarm() else arm() }
+                        macros = macros
                     )
                     1 -> MacroScreen(
                         activity = activity,
                         macros = macros,
-                        maxRepeat = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
-                            .getInt(MacroPrefs.MAX_REPEAT, 100).coerceIn(1, 1000),
+                        maxRepeat = prefs.getInt(MacroPrefs.MAX_REPEAT, 100).coerceIn(1, 1000),
                         onChanged = ::refresh
                     )
                     2 -> HistoryScreen(history) {
@@ -230,11 +206,14 @@ private fun MacroXApp(activity: MainActivity) {
                     else -> SettingsScreen(
                         activity = activity,
                         accessibility = accessibility,
-                        overlay = overlay,
                         battery = battery,
+                        volumeOn = volumeOn,
                         onAccessibility = ::openAccessibility,
-                        onOverlay = ::openOverlay,
                         onBattery = ::openBattery,
+                        onVolumeChange = { on ->
+                            volumeOn = on
+                            prefs.edit().putBoolean(MacroPrefs.ENABLED, on).apply()
+                        },
                         onChanged = ::refresh
                     )
                 }
@@ -244,85 +223,133 @@ private fun MacroXApp(activity: MainActivity) {
 }
 
 @Composable
-private fun StatusPill(enabled: Boolean) {
-    Surface(shape = RoundedCornerShape(20.dp), color = if (enabled) Color(0xFF241014) else Panel) {
+private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(16.dp), color = Panel) {
+        Column(Modifier.padding(16.dp), content = {
+            Text(title, color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+            Spacer(Modifier.height(10.dp))
+            content()
+        })
+    }
+}
+
+@Composable
+private fun StatusPill(running: Boolean) {
+    Surface(shape = RoundedCornerShape(20.dp), color = if (running) RedDark else Panel) {
         Row(Modifier.padding(horizontal = 11.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(7.dp).background(if (enabled) Red else Muted, RoundedCornerShape(50)))
+            Box(Modifier.size(7.dp).background(if (running) Red else Muted, CircleShape))
             Spacer(Modifier.width(7.dp))
-            Text(if (enabled) "ARMED" else "IDLE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (enabled) Red else Muted)
+            Text(if (running) "RUNNING" else "IDLE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (running) Red else Muted)
         }
     }
 }
 
 @Composable
 private fun HomeScreen(
+    selected: Macro?,
+    running: Boolean,
+    ready: Boolean,
+    accessibility: Boolean,
     macros: List<Macro>,
-    selectedId: Long,
-    enabled: Boolean,
-    canArm: Boolean,
-    onSelect: (Long) -> Unit,
-    onRun: () -> Unit,
-    onArm: () -> Unit
+    onPower: () -> Unit,
+    onOpenAccessibility: () -> Unit,
+    onPick: (Long) -> Unit
 ) {
-    val selected = macros.firstOrNull { it.id == selectedId } ?: macros.firstOrNull()
-    Column(Modifier.fillMaxSize()) {
-        Text("CONTROL", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Spacer(Modifier.height(12.dp))
-        if (selected == null) {
-            EmptyCard("No macros saved", "Create a macro before the engine can run.")
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (macros.isEmpty()) {
+            EmptyCard("No macros saved", "Go to the Macros tab and create one first.")
         } else {
-            MacroPicker(macros, selected, onSelect)
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = onRun,
-                enabled = canArm,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Red, disabledContainerColor = Color(0xFF2A2A2A)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Default.PlayArrow, null)
-                Spacer(Modifier.width(8.dp))
-                Text("RUN MACRO", fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(
-                onClick = onArm,
-                modifier = Modifier.fillMaxWidth().height(50.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (enabled) Red else Color.White),
-                border = BorderStroke(1.dp, if (enabled) Red else Color(0xFF333333)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(if (enabled) "DISARM ENGINE" else "ARM ENGINE", fontWeight = FontWeight.Bold)
-            }
+            MacroPicker(macros, selected, onPick)
         }
+
+        Spacer(Modifier.weight(1f))
+
+        PowerButton(running = running, enabled = ready || running, onClick = onPower)
+
         Spacer(Modifier.height(18.dp))
-        Text("REQUIREMENTS", color = Muted, fontSize = 10.sp, letterSpacing = 1.4.sp)
-        Spacer(Modifier.height(8.dp))
-        RequirementRow("Accessibility service", isAccessibilityEnabled(androidx.compose.ui.platform.LocalContext.current))
-        RequirementRow("Floating controls", Settings.canDrawOverlays(androidx.compose.ui.platform.LocalContext.current))
-        if (!canArm) {
-            Text(
-                "Enable the missing requirements in Settings. Macro X does not report them as ready until Android confirms them.",
-                color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 10.dp)
-            )
+
+        val hint = when {
+            !accessibility -> "Turn on Accessibility to start macros"
+            selected == null -> "Create a macro to get started"
+            running -> "Running. Tap to stop"
+            else -> "Tap to run ${selected?.name ?: "macro"}"
         }
+        Text(
+            hint,
+            color = if (!accessibility) Red else Muted,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center
+        )
+
+        if (!accessibility) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onOpenAccessibility,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Red)
+            ) {
+                Text("OPEN ACCESSIBILITY", color = Red, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
     }
 }
 
 @Composable
-private fun MacroPicker(macros: List<Macro>, selected: Macro, onSelect: (Long) -> Unit) {
+private fun PowerButton(running: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val ring = when {
+        running -> Red
+        enabled -> Color(0xFF3A3A3A)
+        else -> Color(0xFF262626)
+    }
+    val fill = if (running) RedDark else Color(0xFF121212)
+    val icon = when {
+        running -> Red
+        enabled -> Color.White
+        else -> Muted
+    }
+    Box(
+        modifier = Modifier
+            .size(210.dp)
+            .clip(CircleShape)
+            .background(fill)
+            .border(4.dp, ring, CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Default.PowerSettingsNew,
+            contentDescription = if (running) "Stop macro" else "Start macro",
+            tint = icon,
+            modifier = Modifier.size(84.dp)
+        )
+    }
+}
+
+@Composable
+private fun MacroPicker(macros: List<Macro>, selected: Macro?, onSelect: (Long) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
+    Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier.fillMaxWidth().clickable { expanded = true },
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(14.dp),
             color = Panel
         ) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("SELECTED MACRO", color = Muted, fontSize = 9.sp, letterSpacing = 1.2.sp)
-                    Text(selected.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${selected.steps.size} steps • ${selected.repeatCount} repeat(s)", color = Muted, fontSize = 11.sp)
+                    Text(selected?.name ?: "None", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    if (selected != null) {
+                        Text(
+                            "${selected.steps.size} steps • repeat ${selected.repeatCount}",
+                            color = Muted,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
                 Icon(Icons.Default.ExpandMore, null, tint = Muted)
             }
@@ -339,27 +366,8 @@ private fun MacroPicker(macros: List<Macro>, selected: Macro, onSelect: (Long) -
 }
 
 @Composable
-private fun RequirementRow(label: String, granted: Boolean) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            if (granted) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
-            null,
-            tint = if (granted) Green else Red,
-            modifier = Modifier.size(19.dp)
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(label, fontSize = 13.sp)
-        Spacer(Modifier.weight(1f))
-        Text(if (granted) "Enabled" else "Missing", color = if (granted) Green else Muted, fontSize = 11.sp)
-    }
-}
-
-@Composable
 private fun EmptyCard(title: String, detail: String) {
-    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(12.dp), color = Panel) {
+    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(14.dp), color = Panel) {
         Column(Modifier.padding(18.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold)
             Text(detail, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
@@ -374,24 +382,34 @@ private fun MacroScreen(activity: Context, macros: List<Macro>, maxRepeat: Int, 
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
-                Text("MACROS", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("Create and edit real saved sequences.", color = Muted, fontSize = 12.sp)
+                Text("Macros", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Text("${macros.size} saved", color = Muted, fontSize = 12.sp)
             }
-            IconButton(onClick = { creating = true }) {
-                Icon(Icons.Default.AddCircle, "Create macro", tint = Red)
+            FilledTonalButton(
+                onClick = { creating = true },
+                colors = ButtonDefaults.filledTonalButtonColors(containerColor = RedDark, contentColor = Color.White),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("New")
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(14.dp))
         if (macros.isEmpty()) {
-            EmptyCard("No saved macros", "Your macro list is empty. Create one to begin.")
+            EmptyCard("No saved macros", "Tap New to build your first sequence of taps, swipes and waits.")
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(macros, key = { _, m -> m.id }) { _, macro ->
-                    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(12.dp), color = Panel) {
+                    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(14.dp), color = Panel) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(macro.name, fontWeight = FontWeight.SemiBold)
-                                Text("${macro.steps.size} steps • repeat ${macro.repeatCount}", color = Muted, fontSize = 11.sp)
+                                Text(macro.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text(
+                                    "${macro.steps.size} steps • repeat ${macro.repeatCount}x",
+                                    color = Muted,
+                                    fontSize = 11.sp
+                                )
                             }
                             IconButton(onClick = { editing = macro }) {
                                 Icon(Icons.Default.Edit, "Edit", tint = Muted)
@@ -410,16 +428,16 @@ private fun MacroScreen(activity: Context, macros: List<Macro>, maxRepeat: Int, 
     }
 
     if (creating) {
-        MacroEditorDialog(activity, null, maxRepeat, {
+        MacroEditorDialog(activity, null, maxRepeat) {
             creating = false
             onChanged()
-        })
+        }
     }
     editing?.let { macro ->
-        MacroEditorDialog(activity, macro, maxRepeat, {
+        MacroEditorDialog(activity, macro, maxRepeat) {
             editing = null
             onChanged()
-        })
+        }
     }
 }
 
@@ -452,9 +470,9 @@ private fun MacroEditorDialog(
                     Text("$repeat", fontWeight = FontWeight.Bold)
                     IconButton(onClick = { repeat = (repeat + 1).coerceAtMost(maxRepeat) }) { Icon(Icons.Default.Add, "Increase") }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Steps", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("Steps (${steps.size})", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     TextButton(onClick = { stepDialog = -1 }) { Text("ADD STEP", color = Red) }
                 }
                 if (steps.isEmpty()) {
@@ -462,7 +480,7 @@ private fun MacroEditorDialog(
                 } else {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         itemsIndexed(steps) { index, step ->
-                            Surface(Modifier.fillMaxWidth(), RoundedCornerShape(9.dp), color = Panel2) {
+                            Surface(Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), color = Panel2) {
                                 Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text("${index + 1}", color = Red, fontWeight = FontWeight.Bold, modifier = Modifier.width(26.dp))
                                     Column(Modifier.weight(1f)) {
@@ -521,14 +539,14 @@ private fun MacroEditorDialog(
 }
 
 private fun stepLabel(step: MacroStep) = when (step.type) {
-    ActionType.TAP -> "Screen tap"
-    ActionType.SWIPE -> "Swipe gesture"
-    ActionType.DELAY -> "Delay"
+    ActionType.TAP -> "Tap"
+    ActionType.SWIPE -> "Swipe"
+    ActionType.DELAY -> "Wait"
 }
 
 private fun stepDetail(step: MacroStep) = when (step.type) {
-    ActionType.TAP -> "(${step.x1}, ${step.y1}) • +${step.delayAfterMs} ms"
-    ActionType.SWIPE -> "(${step.x1},${step.y1}) → (${step.x2},${step.y2}) • +${step.delayAfterMs} ms"
+    ActionType.TAP -> "x ${step.x1}, y ${step.y1}  •  then wait ${step.delayAfterMs} ms"
+    ActionType.SWIPE -> "(${step.x1}, ${step.y1}) to (${step.x2}, ${step.y2})  •  ${step.durationMs} ms  •  then wait ${step.delayAfterMs} ms"
     ActionType.DELAY -> "${step.durationMs} ms"
 }
 
@@ -557,7 +575,7 @@ private fun StepEditorDialog(
                         FilterChip(
                             selected = type == option,
                             onClick = { type = option },
-                            label = { Text(option.name.replace('_', ' ')) },
+                            label = { Text(stepLabel(MacroStep(option))) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = RedDark,
                                 selectedLabelColor = Color.White
@@ -578,9 +596,9 @@ private fun StepEditorDialog(
                         CoordinateField("End Y", y2) { y2 = it }
                         CoordinateField("Swipe duration (ms)", duration) { duration = it }
                     }
-                    ActionType.DELAY -> CoordinateField("Delay duration (ms)", duration) { duration = it }
+                    ActionType.DELAY -> CoordinateField("Wait duration (ms)", duration) { duration = it }
                 }
-                if (type != ActionType.DELAY) CoordinateField("Delay after (ms)", after) { after = it }
+                if (type != ActionType.DELAY) CoordinateField("Wait after (ms)", after) { after = it }
                 error?.let { Text(it, color = Red, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)) }
             }
         },
@@ -610,8 +628,8 @@ private fun StepEditorDialog(
                         MacroStep(type, ax, ay, bx, by, d.toLong(), wait.toLong())
                     }
                     ActionType.DELAY -> {
-                        val d = intValue(duration, "Delay")
-                        if (d == null || d == 0) { error = "Delay must be greater than 0."; return@Button }
+                        val d = intValue(duration, "Wait")
+                        if (d == null || d == 0) { error = "Wait must be greater than 0."; return@Button }
                         MacroStep(type, durationMs = d.toLong())
                     }
                 }
@@ -639,26 +657,36 @@ private fun HistoryScreen(history: List<HistoryEntry>, onClear: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
-                Text("HISTORY", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("Only completed and failed executions are stored.", color = Muted, fontSize = 12.sp)
+                Text("History", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Text("Completed and failed runs.", color = Muted, fontSize = 12.sp)
             }
             if (history.isNotEmpty()) {
                 TextButton(onClick = onClear) { Text("CLEAR", color = Red) }
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(14.dp))
         if (history.isEmpty()) {
             EmptyCard("No run history", "Nothing has been executed yet.")
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(history, key = { _, h -> h.id }) { _, item ->
-                    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(12.dp), color = Panel) {
+                    Surface(Modifier.fillMaxWidth(), RoundedCornerShape(14.dp), color = Panel) {
                         Column(Modifier.padding(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(item.macroName, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                Text(item.status, color = if (item.status == "COMPLETED") Green else Red, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    item.status,
+                                    color = if (item.status == "COMPLETED") Green else Red,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
-                            Text(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(item.startedAt)), color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                            Text(
+                                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(item.startedAt)),
+                                color = Muted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
                             Text("Duration ${item.durationMs} ms", color = Muted, fontSize = 11.sp)
                         }
                     }
@@ -672,11 +700,11 @@ private fun HistoryScreen(history: List<HistoryEntry>, onClear: () -> Unit) {
 private fun SettingsScreen(
     activity: Context,
     accessibility: Boolean,
-    overlay: Boolean,
     battery: Boolean,
+    volumeOn: Boolean,
     onAccessibility: () -> Unit,
-    onOverlay: () -> Unit,
     onBattery: () -> Unit,
+    onVolumeChange: (Boolean) -> Unit,
     onChanged: () -> Unit
 ) {
     val prefs = activity.getSharedPreferences(MacroPrefs.PREFS, 0)
@@ -684,62 +712,108 @@ private fun SettingsScreen(
     var speed by remember { mutableFloatStateOf(prefs.getFloat(MacroPrefs.SPEED, 1f)) }
     var maxRepeat by remember { mutableIntStateOf(prefs.getInt(MacroPrefs.MAX_REPEAT, 100).coerceIn(1, 1000)) }
 
-    Column(Modifier.fillMaxSize()) {
-        Text("SETTINGS", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-        Text("Android permissions and execution controls.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
-        Spacer(Modifier.height(16.dp))
-        Text("ANDROID STATUS", color = Muted, fontSize = 10.sp, letterSpacing = 1.4.sp)
-        PermissionRow("Accessibility service", accessibility, onAccessibility)
-        PermissionRow("Floating controls", overlay, onOverlay)
-        PermissionRow("Battery optimization exemption", battery, if (!battery && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) onBattery else null)
-        Spacer(Modifier.height(14.dp))
-        Text("VOLUME TRIGGER", color = Muted, fontSize = 10.sp, letterSpacing = 1.4.sp)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(trigger == "VOLUME_UP", { trigger = "VOLUME_UP"; prefs.edit().putString(MacroPrefs.TRIGGER, trigger).apply() }, colors = RadioButtonDefaults.colors(selectedColor = Red))
-            Text("Volume Up")
-            Spacer(Modifier.width(18.dp))
-            RadioButton(trigger == "VOLUME_DOWN", { trigger = "VOLUME_DOWN"; prefs.edit().putString(MacroPrefs.TRIGGER, trigger).apply() }, colors = RadioButtonDefaults.colors(selectedColor = Red))
-            Text("Volume Down")
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column {
+            Text("Settings", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+            Text("Permissions and playback options.", color = Muted, fontSize = 12.sp)
         }
-        Spacer(Modifier.height(10.dp))
-        Text("EXECUTION SPEED", color = Muted, fontSize = 10.sp, letterSpacing = 1.4.sp)
-        Text("${"%.2f".format(speed)}×", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        Slider(
-            value = speed, onValueChange = {
-                speed = it
-                prefs.edit().putFloat(MacroPrefs.SPEED, it).apply()
-            }, valueRange = 0.25f..4f, colors = SliderDefaults.colors(thumbColor = Red, activeTrackColor = Red)
-        )
-        Text("0.25× is slower; 4× is faster.", color = Muted, fontSize = 11.sp)
-        Spacer(Modifier.height(12.dp))
-        Text("MAX REPEAT LIMIT", color = Muted, fontSize = 10.sp, letterSpacing = 1.4.sp)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = {
-                maxRepeat = (maxRepeat - 1).coerceAtLeast(1)
-                prefs.edit().putInt(MacroPrefs.MAX_REPEAT, maxRepeat).apply()
-                onChanged()
-            }) { Icon(Icons.Default.Remove, "Decrease") }
-            Text("$maxRepeat", fontWeight = FontWeight.Bold)
-            IconButton(onClick = {
-                maxRepeat = (maxRepeat + 1).coerceAtMost(1000)
-                prefs.edit().putInt(MacroPrefs.MAX_REPEAT, maxRepeat).apply()
-                onChanged()
-            }) { Icon(Icons.Default.Add, "Increase") }
+
+        SectionCard("PERMISSIONS") {
+            PermissionRow("Accessibility service", "Needed to perform taps and swipes", accessibility, onAccessibility)
+            PermissionRow(
+                "Unrestricted battery",
+                "Keeps Macro X from being stopped in the background",
+                battery,
+                if (!battery && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) onBattery else null
+            )
         }
-        Text("Macro repeat counts cannot exceed this limit.", color = Muted, fontSize = 11.sp)
+
+        SectionCard("VOLUME KEY TRIGGER") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Run macro with a volume key", fontSize = 14.sp)
+                    Text("Works while Accessibility is on", color = Muted, fontSize = 11.sp)
+                }
+                Switch(
+                    checked = volumeOn,
+                    onCheckedChange = onVolumeChange,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Red)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(
+                    selected = trigger == "VOLUME_UP",
+                    onClick = { trigger = "VOLUME_UP"; prefs.edit().putString(MacroPrefs.TRIGGER, trigger).apply() },
+                    colors = RadioButtonDefaults.colors(selectedColor = Red)
+                )
+                Text("Volume up", fontSize = 13.sp)
+                Spacer(Modifier.width(18.dp))
+                RadioButton(
+                    selected = trigger == "VOLUME_DOWN",
+                    onClick = { trigger = "VOLUME_DOWN"; prefs.edit().putString(MacroPrefs.TRIGGER, trigger).apply() },
+                    colors = RadioButtonDefaults.colors(selectedColor = Red)
+                )
+                Text("Volume down", fontSize = 13.sp)
+            }
+        }
+
+        SectionCard("PLAYBACK") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Speed", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text("${"%.2f".format(speed)}×", fontWeight = FontWeight.Bold)
+            }
+            Slider(
+                value = speed,
+                onValueChange = {
+                    speed = it
+                    prefs.edit().putFloat(MacroPrefs.SPEED, it).apply()
+                },
+                valueRange = 0.25f..4f,
+                colors = SliderDefaults.colors(thumbColor = Red, activeTrackColor = Red)
+            )
+            Text("0.25× is slower, 4× is faster.", color = Muted, fontSize = 11.sp)
+
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Max repeat limit", fontSize = 14.sp)
+                    Text("Caps the repeat count on any macro", color = Muted, fontSize = 11.sp)
+                }
+                IconButton(onClick = {
+                    maxRepeat = (maxRepeat - 1).coerceAtLeast(1)
+                    prefs.edit().putInt(MacroPrefs.MAX_REPEAT, maxRepeat).apply()
+                    onChanged()
+                }) { Icon(Icons.Default.Remove, "Decrease") }
+                Text("$maxRepeat", fontWeight = FontWeight.Bold)
+                IconButton(onClick = {
+                    maxRepeat = (maxRepeat + 1).coerceAtMost(1000)
+                    prefs.edit().putInt(MacroPrefs.MAX_REPEAT, maxRepeat).apply()
+                    onChanged()
+                }) { Icon(Icons.Default.Add, "Increase") }
+            }
+        }
     }
 }
 
 @Composable
-private fun PermissionRow(label: String, granted: Boolean, action: (() -> Unit)?) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(if (granted) Icons.Default.CheckCircle else Icons.Default.ErrorOutline, null, tint = if (granted) Green else Red)
+private fun PermissionRow(label: String, detail: String, granted: Boolean, action: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            if (granted) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+            null,
+            tint = if (granted) Green else Red
+        )
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 13.sp)
-            Text(if (granted) "Confirmed by Android" else "Not enabled", color = if (granted) Green else Muted, fontSize = 10.sp)
+            Text(label, fontSize = 14.sp)
+            Text(detail, color = Muted, fontSize = 11.sp)
         }
         if (!granted && action != null) TextButton(onClick = action) { Text("OPEN", color = Red) }
+        else if (granted) Text("On", color = Green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
